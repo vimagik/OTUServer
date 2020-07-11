@@ -1,9 +1,9 @@
 import socket
 import os
-import threading
 import argparse
 from urllib.parse import unquote_plus
 from datetime import datetime
+from concurrent.futures import ThreadPoolExecutor
 
 from myrequest import MyRequest
 from myresponse import MyResponse
@@ -39,16 +39,13 @@ class MyHTTPServer:
         try:
             serv_sock.bind((self._host, self._port))
             serv_sock.listen(self._number_workers)
+            executor = ThreadPoolExecutor(max_workers=self._number_workers)
             print(f"Server {self._server_name} started at {self._host}:{self._port}")
             while True:
                 conn, _ = serv_sock.accept()
+                conn.settimeout(10)
                 try:
-                    client_handler = threading.Thread(
-                        target=self.serve_client,
-                        args=(conn,),
-
-                    )
-                    client_handler.start()
+                    executor.submit(self.serve_client, conn)
                 except Exception as e:
                     print('Client serving failed', e)
         finally:
@@ -68,23 +65,19 @@ class MyHTTPServer:
             conn.close()
 
     def parse_request(self, conn: socket) -> MyRequest:
-        """Парсинг шапки запроса"""
-        method, target, ver = self.parse_request_line(conn)
-        target, args = self.parse_target(target)
-        headers = self.parse_headers(conn)
-        return MyRequest(method, target, ver, headers, args)
-
-    def parse_request_line(self, conn: socket) -> tuple:
-        """Парсинг первой строки запроса"""
+        """Парсинг запроса"""
         buff = ''
-        while '\r\n' not in buff:
-            byte = conn.recv(1)
-            buff += str(byte, encoding='iso-8859-1')
-        words = buff.split()
-        if len(words) != 3:
+        while '\n\n' not in buff:
+            data = conn.recv(1024)
+            buff += str(data, encoding='iso-8859-1').replace('\r\n', '\n')
+        buff = buff.split('\n')
+        request_line = buff[0].split()
+        if len(request_line) != 3:
             raise Exception('Request has nonstandard format')
-        method, target, ver = words
-        return method, target, ver
+        method, target, ver = request_line
+        headers_dict = {h.split(':', 1)[0]: h.split(':', 1)[1] for h in buff[1:] if ':' in h}
+        target, args = self.parse_target(target)
+        return MyRequest(method, target, ver, headers_dict, args)
 
     def parse_target(self, target: str) -> tuple:
         """Дополнительная обратока target из запроса. Вычищаем путь, читаем аргументы"""
@@ -94,20 +87,6 @@ class MyHTTPServer:
             target, string_args = target.split('?', 1)
             args = {arg.split('=')[0]: arg.split('=')[1] for arg in string_args.split('&')}
         return target, args
-
-    def parse_headers(self, conn: socket) -> dict:
-        """Парсинг headers из запроса"""
-        headers = []
-        while True:
-            line = ''
-            while '\r\n' not in line:
-                byte = conn.recv(1)
-                line += str(byte, encoding='iso-8859-1')
-            if line in ('\r\n', '\n', ''):
-                break
-            headers.append(line)
-        headers_dict = {h.split(':', 1)[0]: h.split(':', 1)[1] for h in headers}
-        return headers_dict
 
     def handle_request(self, req: MyRequest) -> MyResponse:
         """Основной маршрутизатор запросов"""
@@ -119,7 +98,7 @@ class MyHTTPServer:
 
     def handle_head_method(self, target: str) -> MyResponse:
         """Обработка HEAD запросов"""
-        file_path = self._doc_root + target
+        file_path = os.path.abspath(self._doc_root + target)
         if os.path.exists(file_path):
             _, file_extension = os.path.splitext(file_path)
             headers = {
@@ -139,7 +118,7 @@ class MyHTTPServer:
 
     def handle_get_method(self, target: str) -> MyResponse:
         """Обработка GET запросов"""
-        path = self._doc_root + target
+        path = os.path.abspath(self._doc_root + target)
         if os.path.isdir(path):
             file_path = os.path.join(path, 'index.html')
         else:
@@ -199,13 +178,13 @@ class MyHTTPServer:
 def parse_args() -> tuple:
     """Парсинг аргументов, переданных в командной строке"""
     parser = argparse.ArgumentParser()
-    parser.add_argument('-w', default=8)
+    parser.add_argument('-w', default=1024)
     parser.add_argument('-r', default="http-test-suite-master")
     console_data = parser.parse_args()
     try:
         number_workers = int(console_data.w)
     except:
-        number_workers = 8
+        number_workers = 1024
     return number_workers, console_data.r
 
 
