@@ -29,16 +29,16 @@ The fifth homework
 |Показатель|Значение|
 |----------|--------|
 |Concurrency Level|100|
-|Time taken for tests|28.770 seconds|
+|Time taken for tests|18.552 seconds|
 |Complete requests|50000|
 |Failed requests|0|
 |Non-2xx responses|0|
-|Total transferred|6050000 bytes|
+|Total transferred|5500000 bytes|
 |HTML transferred|0 bytes|
-|Requests per second|1737.95 [#/sec] (mean)|
-|Time per request|57.539 [ms] (mean)|
-|Time per request|0.575 [ms] (mean, across all concurrent requests)|
-|Transfer rate|205.36 [Kbytes/sec] received|
+|Requests per second|2695.17 [#/sec] (mean)|
+|Time per request|37.103 [ms] (mean)|
+|Time per request|0.371 [ms] (mean, across all concurrent requests)|
+|Transfer rate|289.52 [Kbytes/sec] received|
 
 ## Запуск сервера
 
