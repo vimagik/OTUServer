@@ -1,6 +1,7 @@
 import socket
 import os
 import argparse
+import mimetypes
 from urllib.parse import unquote_plus
 from datetime import datetime
 from concurrent.futures import ThreadPoolExecutor
@@ -13,16 +14,6 @@ FORBIDDEN = 403
 NOT_FOUND = 404
 METHOD_NOT_ALLOWED = 405
 INTERNAL_SERVER_ERROR = 500
-MIME = {
-    '.html': 'text/html',
-    '.css': 'text/css',
-    '.js': 'text/javascript',
-    '.jpg': 'image/jpeg',
-    '.jpeg': 'image/jpeg',
-    '.png': 'image/png',
-    '.gif': 'image/gif',
-    '.swf': 'application/x-shockwave-flash',
-}
 
 
 class MyHTTPServer:
@@ -54,7 +45,8 @@ class MyHTTPServer:
     def serve_client(self, conn: socket):
         """Обработка запроса"""
         try:
-            req = self.parse_request(conn)
+            buff = self.read_request(conn)
+            req = self.parse_request(buff)
             resp = self.handle_request(req)
             self.send_response(conn, resp)
         except ConnectionResetError:
@@ -64,12 +56,18 @@ class MyHTTPServer:
         if conn:
             conn.close()
 
-    def parse_request(self, conn: socket) -> MyRequest:
-        """Парсинг запроса"""
+    def read_request(self, conn: socket) -> str:
+        """Читаем запрос из сокета"""
         buff = ''
         while '\n\n' not in buff:
             data = conn.recv(1024)
+            if data is None:
+                raise ConnectionResetError
             buff += str(data, encoding='iso-8859-1').replace('\r\n', '\n')
+        return buff
+
+    def parse_request(self, buff: str) -> MyRequest:
+        """Парсинг запроса"""
         buff = buff.split('\n')
         request_line = buff[0].split()
         if len(request_line) != 3:
@@ -96,25 +94,32 @@ class MyHTTPServer:
             return self.handle_get_method(req.target)
         return MyResponse(METHOD_NOT_ALLOWED, 'Method not allowed')
 
+    def create_headers(self, **kwargs) -> dict:
+        """Конструируем headers для ответа"""
+        headers = {
+            'Date': datetime.now().strftime('%a, %d %b %Y %H:%M:%S GMT'),
+            'Server': self._server_name,
+        }
+        for key, value in kwargs.items():
+            head_paramm = key.replace('_', '-')
+            headers[head_paramm] = value
+        return headers
+
     def handle_head_method(self, target: str) -> MyResponse:
         """Обработка HEAD запросов"""
         file_path = os.path.abspath(self._doc_root + target)
         if os.path.exists(file_path):
             _, file_extension = os.path.splitext(file_path)
-            headers = {
-                'Date': datetime.now().strftime('%a, %d %b %Y %H:%M:%S GMT'),
-                'Server': self._server_name,
-                'Last-modified': datetime.fromtimestamp(os.path.getmtime(file_path)).strftime('%a, %d %b %Y %H:%M:%S GMT'),
-                'Content-Type': file_extension,
-                'Content-Length': os.path.getsize(file_path),
-            }
-            return MyResponse(OK, 'Document_follows', headers)
+            headers = self.create_headers(
+                Last_modified=datetime.fromtimestamp(os.path.getmtime(file_path)).strftime('%a, %d %b %Y %H:%M:%S GMT'),
+                Content_Type=file_extension,
+                Content_Length=os.path.getsize(file_path)
+            )
+            resp = MyResponse(OK, 'Document_follows', headers)
         else:
-            headers = {
-                'Date': datetime.now().strftime('%a, %d %b %Y %H:%M:%S %Z'),
-                'Server': self._server_name,
-            }
-        return MyResponse(NOT_FOUND, "Document doesn't exist", headers)
+            headers = self.create_headers()
+            resp = MyResponse(NOT_FOUND, "Document doesn't exist", headers)
+        return resp
 
     def handle_get_method(self, target: str) -> MyResponse:
         """Обработка GET запросов"""
@@ -126,41 +131,34 @@ class MyHTTPServer:
         if os.path.exists(file_path):
             with open(file_path, 'rb') as f:
                 body = f.read()
-            headers = {
-                'Date': datetime.now().strftime('%a, %d %b %Y %H:%M:%S GMT'),
-                'Server': self._server_name,
-                'Content-Type': self.define_content_type(file_path),
-                'Content-Length': os.path.getsize(file_path),
-                'Connection': 'Connection: close'
-            }
-            return MyResponse(OK, "GET", headers, body)
+            headers = self.create_headers(
+                Content_Type=self.define_content_type(file_path),
+                Content_Length=os.path.getsize(file_path),
+                Connection='Connection: close'
+            )
+            resp = MyResponse(OK, "GET", headers, body)
         else:
-            headers = {
-                'Date': datetime.now().strftime('%a, %d %b %Y %H:%M:%S GMT'),
-                'Server': self._server_name,
-                'Connection': 'Connection: close'
-            }
-            return MyResponse(NOT_FOUND, "File not found", headers)
+            headers = self.create_headers(Connection='Connection: close')
+            resp = MyResponse(NOT_FOUND, "File not found", headers)
+        return resp
 
     def define_content_type(self, file_path: str) -> str:
         """Метод по определению Content-Type передаваемого файла"""
         _, file_extension = os.path.splitext(file_path)
-        return MIME.get(file_extension)
+        return mimetypes.types_map[file_extension]
 
     def send_response(self, conn: socket, resp: MyResponse):
         """Отправка сообщения"""
-        wfile = conn.makefile('wb')
         status_line = f'HTTP/1.1 {resp.status} {resp.reason}\r\n'
-        wfile.write(status_line.encode('iso-8859-1'))
+        data = status_line.encode('iso-8859-1')
         if resp.headers:
             for key, value in resp.headers.items():
                 header_line = f'{key}: {value}\r\n'
-                wfile.write(header_line.encode('iso-8859-1'))
-        wfile.write(b'\r\n')
+                data += header_line.encode('iso-8859-1')
+        data += b'\r\n'
         if resp.body:
-            wfile.write(resp.body)
-        wfile.flush()
-        wfile.close()
+            data += resp.body
+        conn.sendall(data)
 
     def send_error(self, conn: socket, error: Exception):
         """Отправка сообщений об ошибках"""
